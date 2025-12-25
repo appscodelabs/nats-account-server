@@ -10,7 +10,7 @@ require (
 	github.com/nats-io/nkeys v0.2.0
 	github.com/rs/cors v1.6.0
 	github.com/stretchr/testify v1.6.1
-	golang.org/x/sys v0.0.0-20200323222414-85ca7c5b95cd
+	golang.org/x/sys v0.1.0
 )
 
 go 1.13

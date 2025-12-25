@@ -41,8 +41,12 @@ func loadAccount(data []byte, version int) (*AccountClaims, error) {
 		return v1a.Migrate()
 	case 2:
 		var v2a AccountClaims
+		v2a.SigningKeys = make(SigningKeys)
 		if err := json.Unmarshal(data, &v2a); err != nil {
 			return nil, err
+		}
+		if len(v2a.Limits.JetStreamTieredLimits) > 0 {
+			v2a.Limits.JetStreamLimits = JetStreamLimits{}
 		}
 		return &v2a, nil
 	default:
@@ -72,8 +76,11 @@ func (oa v1AccountClaims) migrateV1() (*AccountClaims, error) {
 	a.Account.Exports = oa.v1NatsAccount.Exports
 	a.Account.Limits.AccountLimits = oa.v1NatsAccount.Limits.AccountLimits
 	a.Account.Limits.NatsLimits = oa.v1NatsAccount.Limits.NatsLimits
-	a.Account.Limits.JetStreamLimits = JetStreamLimits{0, 0, 0, 0}
-	a.Account.SigningKeys = oa.v1NatsAccount.SigningKeys
+	a.Account.Limits.JetStreamLimits = JetStreamLimits{}
+	a.Account.SigningKeys = make(SigningKeys)
+	for _, v := range oa.SigningKeys {
+		a.Account.SigningKeys.Add(v)
+	}
 	a.Account.Revocations = oa.v1NatsAccount.Revocations
 	a.Version = 1
 	return &a, nil

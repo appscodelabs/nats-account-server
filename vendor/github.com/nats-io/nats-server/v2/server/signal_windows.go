@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -30,13 +31,18 @@ func (s *Server) handleSignals() {
 	}
 	c := make(chan os.Signal, 1)
 
-	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		for sig := range c {
-			s.Debugf("Trapped %q signal", sig)
-			s.Shutdown()
-			os.Exit(0)
+		for {
+			select {
+			case sig := <-c:
+				s.Debugf("Trapped %q signal", sig)
+				s.Shutdown()
+				os.Exit(0)
+			case <-s.quitCh:
+				return
+			}
 		}
 	}()
 }

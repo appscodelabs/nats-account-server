@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,9 +14,11 @@
 package server
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
+	"time"
 
 	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
@@ -25,22 +27,22 @@ import (
 type Logger interface {
 
 	// Log a notice statement
-	Noticef(format string, v ...interface{})
+	Noticef(format string, v ...any)
 
 	// Log a warning statement
-	Warnf(format string, v ...interface{})
+	Warnf(format string, v ...any)
 
 	// Log a fatal error
-	Fatalf(format string, v ...interface{})
+	Fatalf(format string, v ...any)
 
 	// Log an error
-	Errorf(format string, v ...interface{})
+	Errorf(format string, v ...any)
 
 	// Log a debug statement
-	Debugf(format string, v ...interface{})
+	Debugf(format string, v ...any)
 
 	// Log a trace statement
-	Tracef(format string, v ...interface{})
+	Tracef(format string, v ...any)
 }
 
 // ConfigureLogger configures and sets the logger for the server.
@@ -64,10 +66,20 @@ func (s *Server) ConfigureLogger() {
 	}
 
 	if opts.LogFile != "" {
-		log = srvlog.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
+		log = srvlog.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true, srvlog.LogUTC(opts.LogtimeUTC))
 		if opts.LogSizeLimit > 0 {
 			if l, ok := log.(*srvlog.Logger); ok {
 				l.SetSizeLimit(opts.LogSizeLimit)
+			}
+		}
+		if opts.LogMaxFiles > 0 {
+			if l, ok := log.(*srvlog.Logger); ok {
+				al := int(opts.LogMaxFiles)
+				if int64(al) != opts.LogMaxFiles {
+					// set to default (no max) on overflow
+					al = 0
+				}
+				l.SetMaxNumFiles(al)
 			}
 		}
 	} else if opts.RemoteSyslog != "" {
@@ -82,10 +94,17 @@ func (s *Server) ConfigureLogger() {
 		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
 			colors = false
 		}
-		log = srvlog.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
+		log = srvlog.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true, srvlog.LogUTC(opts.LogtimeUTC))
 	}
 
 	s.SetLoggerV2(log, opts.Debug, opts.Trace, opts.TraceVerbose)
+}
+
+// Returns our current logger.
+func (s *Server) Logger() Logger {
+	s.logging.Lock()
+	defer s.logging.Unlock()
+	return s.logging.logger
 }
 
 // SetLogger sets the logger of the server
@@ -145,8 +164,11 @@ func (s *Server) ReOpenLogFile() {
 	if opts.LogFile == "" {
 		s.Noticef("File log re-open ignored, not a file logger")
 	} else {
-		fileLog := srvlog.NewFileLogger(opts.LogFile,
-			opts.Logtime, opts.Debug, opts.Trace, true)
+		fileLog := srvlog.NewFileLogger(
+			opts.LogFile, opts.Logtime,
+			opts.Debug, opts.Trace, true,
+			srvlog.LogUTC(opts.LogtimeUTC),
+		)
 		s.SetLogger(fileLog, opts.Debug, opts.Trace)
 		if opts.LogSizeLimit > 0 {
 			fileLog.SetSizeLimit(opts.LogSizeLimit)
@@ -156,77 +178,101 @@ func (s *Server) ReOpenLogFile() {
 }
 
 // Noticef logs a notice statement
-func (s *Server) Noticef(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Noticef(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Noticef(format, v...)
 	}, format, v...)
 }
 
 // Errorf logs an error
-func (s *Server) Errorf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Errorf(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, format, v...)
 }
 
 // Error logs an error with a scope
-func (s *Server) Errors(scope interface{}, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Errors(scope any, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, "%s - %s", scope, UnpackIfErrorCtx(e))
 }
 
 // Error logs an error with a context
 func (s *Server) Errorc(ctx string, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, "%s: %s", ctx, UnpackIfErrorCtx(e))
 }
 
 // Error logs an error with a scope and context
-func (s *Server) Errorsc(scope interface{}, ctx string, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Errorsc(scope any, ctx string, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, "%s - %s: %s", scope, ctx, UnpackIfErrorCtx(e))
 }
 
 // Warnf logs a warning error
-func (s *Server) Warnf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Warnf(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Warnf(format, v...)
 	}, format, v...)
 }
 
+func (s *Server) rateLimitFormatWarnf(format string, v ...any) {
+	if _, loaded := s.rateLimitLogging.LoadOrStore(format, time.Now()); loaded {
+		return
+	}
+	statement := fmt.Sprintf(format, v...)
+	s.Warnf("%s", statement)
+}
+
+func (s *Server) RateLimitWarnf(format string, v ...any) {
+	statement := fmt.Sprintf(format, v...)
+	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
+		return
+	}
+	s.Warnf("%s", statement)
+}
+
+func (s *Server) RateLimitDebugf(format string, v ...any) {
+	statement := fmt.Sprintf(format, v...)
+	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
+		return
+	}
+	s.Debugf("%s", statement)
+}
+
 // Fatalf logs a fatal error
-func (s *Server) Fatalf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Fatalf(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Fatalf(format, v...)
 	}, format, v...)
 }
 
 // Debugf logs a debug statement
-func (s *Server) Debugf(format string, v ...interface{}) {
+func (s *Server) Debugf(format string, v ...any) {
 	if atomic.LoadInt32(&s.logging.debug) == 0 {
 		return
 	}
 
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Debugf(format, v...)
 	}, format, v...)
 }
 
 // Tracef logs a trace statement
-func (s *Server) Tracef(format string, v ...interface{}) {
+func (s *Server) Tracef(format string, v ...any) {
 	if atomic.LoadInt32(&s.logging.trace) == 0 {
 		return
 	}
 
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Tracef(format, v...)
 	}, format, v...)
 }
 
-func (s *Server) executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
+func (s *Server) executeLogCall(f func(logger Logger, format string, v ...any), format string, args ...any) {
 	s.logging.RLock()
 	defer s.logging.RUnlock()
 	if s.logging.logger == nil {

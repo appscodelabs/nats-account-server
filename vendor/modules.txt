@@ -6,9 +6,9 @@ github.com/julienschmidt/httprouter
 github.com/minio/highwayhash
 # github.com/mitchellh/go-homedir v1.1.0
 github.com/mitchellh/go-homedir
-# github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
+# github.com/nats-io/jwt v1.2.2
 github.com/nats-io/jwt
-# github.com/nats-io/jwt/v2 v2.0.0-20201015190852-e11ce317263c
+# github.com/nats-io/jwt/v2 v2.0.1
 github.com/nats-io/jwt/v2
 # github.com/nats-io/nats-server/v2 v2.1.8-0.20201209001253-25a5fa62ebc8
 github.com/nats-io/nats-server/v2/conf
@@ -22,7 +22,7 @@ github.com/nats-io/nats-server/v2/test
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
 github.com/nats-io/nats.go/util
-# github.com/nats-io/nkeys v0.2.0
+# github.com/nats-io/nkeys v0.3.0
 github.com/nats-io/nkeys
 # github.com/nats-io/nuid v1.0.1
 github.com/nats-io/nuid
@@ -33,13 +33,14 @@ github.com/rs/cors
 # github.com/stretchr/testify v1.6.1
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/require
-# golang.org/x/crypto v0.0.0-20201016220609-9e8e0b390897
+# golang.org/x/crypto v0.0.0-20210314154223-e6e6c4f2bb5b
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/ed25519
 golang.org/x/crypto/ed25519/internal/edwards25519
-# golang.org/x/sys v0.0.0-20200323222414-85ca7c5b95cd
+# golang.org/x/sys v0.0.0-20201119102817-f84b799fce68
 golang.org/x/sys/cpu
+golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry

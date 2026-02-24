@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -35,18 +35,22 @@ type parseState struct {
 }
 
 type pubArg struct {
-	arg     []byte
-	pacache []byte
-	origin  []byte
-	account []byte
-	subject []byte
-	deliver []byte
-	reply   []byte
-	szb     []byte
-	hdb     []byte
-	queues  [][]byte
-	size    int
-	hdr     int
+	arg       []byte
+	pacache   []byte
+	origin    []byte
+	account   []byte
+	subject   []byte
+	deliver   []byte
+	mapped    []byte
+	reply     []byte
+	szb       []byte
+	hdb       []byte
+	queues    [][]byte
+	size      int
+	hdr       int
+	psi       []*serviceImport
+	trace     *msgTrace
+	delivered bool // Only used for service imports
 }
 
 // Parser constants
@@ -145,8 +149,7 @@ func (c *client) parse(buf []byte) error {
 	// proper CONNECT if needed.
 	authSet := c.awaitingAuth()
 	// Snapshot max control line as well.
-	mcl := c.mcl
-	trace := c.trace
+	s, mcl, trace := c.srv, c.mcl, c.trace
 	c.mu.Unlock()
 
 	// Move to loop instead of range syntax to allow jumping of i
@@ -158,7 +161,28 @@ func (c *client) parse(buf []byte) error {
 			c.op = b
 			if b != 'C' && b != 'c' {
 				if authSet {
-					goto authErr
+					if s == nil {
+						goto authErr
+					}
+					var ok bool
+					// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
+					// E.g. telnet proto demos.
+					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
+						s.mu.Lock()
+						user, exists := s.users[noAuthUser]
+						s.mu.Unlock()
+						if exists {
+							c.RegisterUser(user)
+							c.mu.Lock()
+							c.clearAuthTimer()
+							c.flags.set(connectReceived)
+							c.mu.Unlock()
+							authSet, ok = false, true
+						}
+					}
+					if !ok {
+						goto authErr
+					}
 				}
 				// If the connection is a gateway connection, make sure that
 				// if this is an inbound, it starts with a CONNECT.
@@ -257,12 +281,20 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
+				}
 				if trace {
 					c.traceInOp("HPUB", arg)
 				}
-				if err := c.processHeaderPub(arg); err != nil {
+				var remaining []byte
+				if i < len(buf) {
+					remaining = buf[i+1:]
+				}
+				if err := c.processHeaderPub(arg, remaining); err != nil {
 					return err
 				}
+
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
 				// If we don't have a saved buffer then jump ahead with
 				// the index. If this overruns what is left we fall out
@@ -316,6 +348,9 @@ func (c *client) parse(buf []byte) error {
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
 				}
 				var err error
 				if c.kind == ROUTER || c.kind == GATEWAY {
@@ -389,23 +424,16 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
+				}
 				if trace {
 					c.traceInOp("PUB", arg)
 				}
 				if err := c.processPub(arg); err != nil {
 					return err
 				}
-				// Check if we have and account mappings or tees or filters.
-				// FIXME(dlc) - Probably better way to do this.
-				// Could add in cache but will be tricky since results based on pub subject are dynamic
-				// due to wildcard matching and weight sets.
-				if c.kind == CLIENT && c.in.flags.isSet(hasMappings) {
-					old := c.pa.subject
-					changed := c.selectMappedSubject()
-					if trace && changed {
-						c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", old, c.pa.subject)))
-					}
-				}
+
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
 				// If we don't have a saved buffer then jump ahead with
 				// the index. If this overruns what is left we fall out
@@ -460,15 +488,36 @@ func (c *client) parse(buf []byte) error {
 			} else {
 				c.msgBuf = buf[c.as : i+1]
 			}
+
+			var mt *msgTrace
+			if c.pa.hdr > 0 {
+				mt = c.initMsgTrace()
+			}
+			// Check for mappings.
+			if (c.kind == CLIENT || c.kind == LEAF) && c.in.flags.isSet(hasMappings) {
+				changed := c.selectMappedSubject()
+				if changed {
+					if trace {
+						c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", c.pa.mapped, c.pa.subject)))
+					}
+					// c.pa.subject is the subject the original is now mapped to.
+					mt.addSubjectMappingEvent(c.pa.subject)
+				}
+			}
 			if trace {
 				c.traceMsg(c.msgBuf)
 			}
+
 			c.processInboundMsg(c.msgBuf)
+
+			mt.sendEvent()
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
-			c.pa.arg, c.pa.pacache, c.pa.origin, c.pa.account, c.pa.subject = nil, nil, nil, nil, nil
+			c.pa.arg, c.pa.pacache, c.pa.origin, c.pa.account, c.pa.subject, c.pa.mapped = nil, nil, nil, nil, nil, nil
 			c.pa.reply, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.hdb, c.pa.queues = nil, -1, 0, nil, nil, nil
+			c.pa.trace = nil
+			c.pa.delivered = false
 			lmsg = false
 		case OP_A:
 			switch b {
@@ -505,6 +554,9 @@ func (c *client) parse(buf []byte) error {
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
 				}
 				if trace {
 					c.traceInOp("A+", arg)
@@ -544,6 +596,9 @@ func (c *client) parse(buf []byte) error {
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
 				}
 				if trace {
 					c.traceInOp("A-", arg)
@@ -595,6 +650,9 @@ func (c *client) parse(buf []byte) error {
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
 				}
 				var err error
 
@@ -728,6 +786,9 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
+				}
 				var err error
 
 				switch c.kind {
@@ -745,7 +806,8 @@ func (c *client) parse(buf []byte) error {
 							c.traceInOp("LS-", arg)
 						}
 					}
-					err = c.processRemoteUnsub(arg)
+					leafUnsub := c.op == 'L' || c.op == 'l'
+					err = c.processRemoteUnsub(arg, leafUnsub)
 				case GATEWAY:
 					if trace {
 						c.traceInOp("RS-", arg)
@@ -874,8 +936,11 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
+				}
 				if trace {
-					c.traceInOp("CONNECT", removePassFromTrace(arg))
+					c.traceInOp("CONNECT", removeSecretsFromTrace(arg))
 				}
 				if err := c.processConnect(arg); err != nil {
 					return err
@@ -931,6 +996,9 @@ func (c *client) parse(buf []byte) error {
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
 				}
 				var err error
 				if c.kind == ROUTER || c.kind == GATEWAY {
@@ -1008,6 +1076,9 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
+				}
 				if err := c.processInfo(arg); err != nil {
 					return err
 				}
@@ -1084,6 +1155,9 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if err := c.overMaxControlLineLimit(arg, mcl); err != nil {
+					return err
+				}
 				c.processErr(string(arg))
 				c.drop, c.as, c.state = 0, i+1, OP_START
 			default:
@@ -1111,11 +1185,7 @@ func (c *client) parse(buf []byte) error {
 		// Check for violations of control line length here. Note that this is not
 		// exact at all but the performance hit is too great to be precise, and
 		// catching here should prevent memory exhaustion attacks.
-		if len(c.argBuf) > int(mcl) {
-			err := NewErrorCtx(ErrMaxControlLine, "State %d, max_control_line %d, Buffer len %d",
-				c.state, int(mcl), len(c.argBuf))
-			c.sendErr(err.Error())
-			c.closeConnection(MaxControlLineExceeded)
+		if err := c.overMaxControlLineLimit(c.argBuf, mcl); err != nil {
 			return err
 		}
 	}
@@ -1126,7 +1196,7 @@ func (c *client) parse(buf []byte) error {
 		// read buffer and we are not able to process the msg.
 
 		if c.argBuf == nil {
-			// Works also for MSG_ARG, when message comes from ROUTE.
+			// Works also for MSG_ARG, when message comes from ROUTE or GATEWAY.
 			if err := c.clonePubArg(lmsg); err != nil {
 				goto parseErr
 			}
@@ -1158,14 +1228,13 @@ authErr:
 
 parseErr:
 	c.sendErr("Unknown Protocol Operation")
-	snip := protoSnippet(i, buf)
-	err := fmt.Errorf("%s parser ERROR, state=%d, i=%d: proto='%s...'",
-		c.typeString(), c.state, i, snip)
+	snip := protoSnippet(i, PROTO_SNIPPET_SIZE, buf)
+	err := fmt.Errorf("%s parser ERROR, state=%d, i=%d: proto='%s...'", c.kindString(), c.state, i, snip)
 	return err
 }
 
-func protoSnippet(start int, buf []byte) string {
-	stop := start + PROTO_SNIPPET_SIZE
+func protoSnippet(start, max int, buf []byte) string {
+	stop := start + max
 	bufSize := len(buf)
 	if start >= bufSize {
 		return `""`
@@ -1174,6 +1243,23 @@ func protoSnippet(start int, buf []byte) string {
 		stop = bufSize - 1
 	}
 	return fmt.Sprintf("%q", buf[start:stop])
+}
+
+// Check if the length of buffer `arg` is over the max control line limit `mcl`.
+// If so, an error is sent to the client and the connection is closed.
+// The error ErrMaxControlLine is returned.
+func (c *client) overMaxControlLineLimit(arg []byte, mcl int32) error {
+	if c.kind != CLIENT {
+		return nil
+	}
+	if len(arg) > int(mcl) {
+		err := NewErrorCtx(ErrMaxControlLine, "State %d, max_control_line %d, Buffer len %d (snip: %s...)",
+			c.state, int(mcl), len(c.argBuf), protoSnippet(0, MAX_CONTROL_LINE_SNIPPET_SIZE, arg))
+		c.sendErr(err.Error())
+		c.closeConnection(MaxControlLineExceeded)
+		return err
+	}
+	return nil
 }
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
@@ -1203,7 +1289,7 @@ func (c *client) clonePubArg(lmsg bool) error {
 		if c.pa.hdr < 0 {
 			return c.processPub(c.argBuf)
 		} else {
-			return c.processHeaderPub(c.argBuf)
+			return c.processHeaderPub(c.argBuf, nil)
 		}
 	}
 }

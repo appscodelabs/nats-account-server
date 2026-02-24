@@ -1,16 +1,32 @@
 module github.com/nats-io/nats-account-server
 
 require (
-	github.com/julienschmidt/httprouter v1.2.0
+	github.com/julienschmidt/httprouter v1.3.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
-	github.com/nats-io/jwt/v2 v2.0.0-20201015190852-e11ce317263c
-	github.com/nats-io/nats-server/v2 v2.1.8-0.20201209001253-25a5fa62ebc8
-	github.com/nats-io/nats.go v1.10.1-0.20201021145452-94be476ad6e0
-	github.com/nats-io/nkeys v0.2.0
-	github.com/rs/cors v1.6.0
-	github.com/stretchr/testify v1.6.1
-	golang.org/x/sys v0.0.0-20200323222414-85ca7c5b95cd
+	github.com/nats-io/jwt/v2 v2.8.0
+	github.com/nats-io/nats-server/v2 v2.11.12
+	github.com/nats-io/nats.go v1.48.0
+	github.com/nats-io/nkeys v0.4.12
+	github.com/rs/cors v1.8.0
+	github.com/stretchr/testify v1.7.1
+	golang.org/x/sys v0.40.0
 )
 
-go 1.13
+require (
+	github.com/antithesishq/antithesis-sdk-go v0.5.0-default-no-op // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/google/go-tpm v0.9.8 // indirect
+	github.com/klauspost/compress v1.18.3 // indirect
+	github.com/kr/pretty v0.2.1 // indirect
+	github.com/kr/text v0.2.0 // indirect
+	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect
+	github.com/nats-io/nuid v1.0.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	golang.org/x/crypto v0.47.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
+	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+go 1.24.0

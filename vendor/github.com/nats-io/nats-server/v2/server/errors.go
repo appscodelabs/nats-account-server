@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -60,9 +60,15 @@ var (
 	// connections.
 	ErrTooManyAccountConnections = errors.New("maximum account active connections exceeded")
 
+	// ErrLeafNodeLoop signals a leafnode is trying to register for a cluster we already have registered.
+	ErrLeafNodeLoop = errors.New("leafnode loop detected")
+
 	// ErrTooManySubs signals a client that the maximum number of subscriptions per connection
 	// has been reached.
 	ErrTooManySubs = errors.New("maximum subscriptions exceeded")
+
+	// ErrTooManySubTokens signals a client that the subject has too many tokens.
+	ErrTooManySubTokens = errors.New("subject has exceeded number of tokens limit")
 
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
@@ -71,6 +77,13 @@ var (
 	// ErrClientConnectedToLeafNodePort represents an error condition when a client
 	// attempted to connect to the leaf node listen port.
 	ErrClientConnectedToLeafNodePort = errors.New("attempted to connect to leaf node port")
+
+	// ErrLeafNodeHasSameClusterName represents an error condition when a leafnode is a cluster
+	// and it has the same cluster name as the hub cluster.
+	ErrLeafNodeHasSameClusterName = errors.New("remote leafnode has same cluster name")
+
+	// ErrLeafNodeDisabled is when we disable leafnodes.
+	ErrLeafNodeDisabled = errors.New("leafnodes disabled")
 
 	// ErrConnectedToWrongPort represents an error condition when a connection is attempted
 	// to the wrong listen port (for instance a LeafNode to a client port, etc...)
@@ -140,6 +153,9 @@ var (
 	// Gateway's name.
 	ErrWrongGateway = errors.New("wrong gateway")
 
+	// ErrGatewayNameHasSpaces signals that the gateway name contains spaces, which is not allowed.
+	ErrGatewayNameHasSpaces = errors.New("gateway name cannot contain spaces")
+
 	// ErrNoSysAccount is returned when an attempt to publish or subscribe is made
 	// when there is no internal system account defined.
 	ErrNoSysAccount = errors.New("system account not setup")
@@ -149,6 +165,9 @@ var (
 
 	// ErrServerNotRunning is used to signal an error that a server is not running.
 	ErrServerNotRunning = errors.New("server is not running")
+
+	// ErrServerNameHasSpaces signals that the server name contains spaces, which is not allowed.
+	ErrServerNameHasSpaces = errors.New("server name cannot contain spaces")
 
 	// ErrBadMsgHeader signals the parser detected a bad message header
 	ErrBadMsgHeader = errors.New("bad message header detected")
@@ -167,24 +186,69 @@ var (
 	// ErrClusterNameRemoteConflict signals that a remote server has a different cluster name.
 	ErrClusterNameRemoteConflict = errors.New("cluster name from remote server conflicts")
 
+	// ErrClusterNameHasSpaces signals that the cluster name contains spaces, which is not allowed.
+	ErrClusterNameHasSpaces = errors.New("cluster name cannot contain spaces")
+
 	// ErrMalformedSubject is returned when a subscription is made with a subject that does not conform to subject rules.
 	ErrMalformedSubject = errors.New("malformed subject")
 
 	// ErrSubscribePermissionViolation is returned when processing of a subscription fails due to permissions.
-	ErrSubscribePermissionViolation = errors.New("subscribe permission viloation")
+	ErrSubscribePermissionViolation = errors.New("subscribe permission violation")
 
 	// ErrNoTransforms signals no subject transforms are available to map this subject.
 	ErrNoTransforms = errors.New("no matching transforms available")
 
-	// ErrJetStreamNotEnabled is returned when JetStream is not enabled.
-	ErrJetStreamNotEnabled = errors.New("jetstream not enabled")
+	// ErrCertNotPinned is returned when pinned certs are set and the certificate is not in it
+	ErrCertNotPinned = errors.New("certificate not pinned")
 
-	// ErrJetStreamStreamNotFound is returned when a stream can not be found.
-	ErrJetStreamStreamNotFound = errors.New("stream not found")
+	// ErrDuplicateServerName is returned when processing a server remote connection and
+	// the server reports that this server name is already used in the cluster.
+	ErrDuplicateServerName = errors.New("duplicate server name")
 
-	// ErrJetStreamNotEnabledForAccount is returned JetStream is not enabled for this account.
-	ErrJetStreamNotEnabledForAccount = errors.New("jetstream not enabled for account")
+	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
+	ErrMinimumVersionRequired = errors.New("minimum version required")
+
+	// ErrInvalidMappingDestination is used for all subject mapping destination errors
+	ErrInvalidMappingDestination = errors.New("invalid mapping destination")
+
+	// ErrInvalidMappingDestinationSubject is used to error on a bad transform destination mapping
+	ErrInvalidMappingDestinationSubject = fmt.Errorf("%w: invalid transform", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationNotUsingAllWildcards is used to error on a transform destination not using all of the token wildcards
+	ErrMappingDestinationNotUsingAllWildcards = fmt.Errorf("%w: not using all of the token wildcard(s)", ErrInvalidMappingDestination)
+
+	// ErrUnknownMappingDestinationFunction is returned when a subject mapping destination contains an unknown mustache-escaped mapping function.
+	ErrUnknownMappingDestinationFunction = fmt.Errorf("%w: unknown function", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationIndexOutOfRange is returned when the mapping destination function is passed an out of range wildcard index value for one of it's arguments
+	ErrMappingDestinationIndexOutOfRange = fmt.Errorf("%w: wildcard index out of range", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationNotEnoughArgs is returned when the mapping destination function is not passed enough arguments
+	ErrMappingDestinationNotEnoughArgs = fmt.Errorf("%w: not enough arguments passed to the function", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationInvalidArg is returned when the mapping destination function is passed and invalid argument
+	ErrMappingDestinationInvalidArg = fmt.Errorf("%w: function argument is invalid or in the wrong format", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationTooManyArgs is returned when the mapping destination function is passed too many arguments
+	ErrMappingDestinationTooManyArgs = fmt.Errorf("%w: too many arguments passed to the function", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationNotSupportedForImport is returned when you try to use a mapping function other than wildcard in a transform that needs to be reversible (i.e. an import)
+	ErrMappingDestinationNotSupportedForImport = fmt.Errorf("%w: the only mapping function allowed for import transforms is {{Wildcard()}}", ErrInvalidMappingDestination)
 )
+
+// mappingDestinationErr is a type of subject mapping destination error
+type mappingDestinationErr struct {
+	token string
+	err   error
+}
+
+func (e *mappingDestinationErr) Error() string {
+	return fmt.Sprintf("%s in %s", e.err, e.token)
+}
+
+func (e *mappingDestinationErr) Is(target error) bool {
+	return target == ErrInvalidMappingDestination
+}
 
 // configErr is a configuration error.
 type configErr struct {
@@ -263,11 +327,11 @@ type errCtx struct {
 	ctx string
 }
 
-func NewErrorCtx(err error, format string, args ...interface{}) error {
+func NewErrorCtx(err error, format string, args ...any) error {
 	return &errCtx{err, fmt.Sprintf(format, args...)}
 }
 
-// implement to work with errors.Is and errors.As
+// Unwrap implement to work with errors.Is and errors.As
 func (e *errCtx) Unwrap() error {
 	if e == nil {
 		return nil
@@ -283,7 +347,7 @@ func (e *errCtx) Context() string {
 	return e.ctx
 }
 
-// Return Error or, if type is right error and context
+// UnpackIfErrorCtx return Error or, if type is right error and context
 func UnpackIfErrorCtx(err error) string {
 	if e, ok := err.(*errCtx); ok {
 		if _, ok := e.error.(*errCtx); ok {
@@ -306,7 +370,7 @@ func errorsUnwrap(err error) error {
 	return u.Unwrap()
 }
 
-// implements: go 1.13 errors.Is(err, target error) bool
+// ErrorIs implements: go 1.13 errors.Is(err, target error) bool
 // TODO replace with native code once we no longer support go1.12
 func ErrorIs(err, target error) bool {
 	// this is an outright copy of go 1.13 errors.Is(err, target error) bool

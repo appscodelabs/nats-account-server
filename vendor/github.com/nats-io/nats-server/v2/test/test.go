@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -28,12 +29,14 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
 
 // So we can pass tests and benchmarks..
 type tLogger interface {
-	Fatalf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
 }
 
 // DefaultTestOptions are default options for the unit tests.
@@ -67,6 +70,10 @@ var (
 
 // RunServer starts a new Go routine based server
 func RunServer(opts *server.Options) *server.Server {
+	return RunServerCallback(opts, nil)
+}
+
+func RunServerCallback(opts *server.Options, callback func(*server.Server)) *server.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
 	}
@@ -74,6 +81,11 @@ func RunServer(opts *server.Options) *server.Server {
 	opts.NoLog = !doLog
 	opts.Trace = doTrace
 	opts.Debug = doDebug
+	// For all tests in the "test" package, we will disable route pooling.
+	opts.Cluster.PoolSize = -1
+	// Also disable compression for "test" package.
+	opts.Cluster.Compression.Mode = server.CompressionOff
+	opts.LeafNode.Compression.Mode = server.CompressionOff
 
 	s, err := server.NewServer(opts)
 	if err != nil || s == nil {
@@ -82,6 +94,17 @@ func RunServer(opts *server.Options) *server.Server {
 
 	if doLog {
 		s.ConfigureLogger()
+	}
+
+	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)
+		debug := ll == "debug" || ll == "trace"
+		trace := ll == "trace"
+		s.SetLoggerV2(log, debug, trace, false)
+	}
+
+	if callback != nil {
+		callback(s)
 	}
 
 	// Run server in Go routine.
@@ -110,7 +133,18 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	return
 }
 
-func stackFatalf(t tLogger, f string, args ...interface{}) {
+// RunServerWithConfigOverrides starts a new Go routine based server with a configuration file,
+// providing a callback to update the options configured.
+func RunServerWithConfigOverrides(configFile string, optsCallback func(*server.Options), svrCallback func(*server.Server)) (srv *server.Server, opts *server.Options) {
+	opts = LoadConfig(configFile)
+	if optsCallback != nil {
+		optsCallback(opts)
+	}
+	srv = RunServerCallback(opts, svrCallback)
+	return
+}
+
+func stackFatalf(t tLogger, f string, args ...any) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
 	lines = append(lines, msg)
@@ -157,7 +191,7 @@ func createRouteConn(t tLogger, host string, port int) net.Conn {
 }
 
 func createClientConn(t tLogger, host string, port int) net.Conn {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	c, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		stackFatalf(t, "Could not connect to server: %v\n", err)
@@ -254,11 +288,27 @@ func setupConnWithProto(t tLogger, c net.Conn, proto int) (sendFun, expectFun) {
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
-func setupConnWithAccount(t tLogger, c net.Conn, account string) (sendFun, expectFun) {
-	checkInfoMsg(t, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
+func setupConnWithAccount(t tLogger, s *server.Server, c net.Conn, account string) (sendFun, expectFun) {
+	info := checkInfoMsg(t, c)
+	s.RegisterAccount(account)
+	acc, err := s.LookupAccount(account)
+	if err != nil {
+		t.Fatalf("Unexpected Error: %v", err)
+	}
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v}\r\n", false, false, false)
 	sendProto(t, c, cs)
-	return sendCommand(t, c), expectCommand(t, c)
+
+	send, expect := sendCommand(t, c), expectCommand(t, c)
+	send("PING\r\n")
+	expect(pongRe)
+
+	nc := s.GetClient(info.CID)
+	if nc == nil {
+		t.Fatalf("Could not get client for CID:%d", info.CID)
+	}
+	nc.RegisterUser(&server.User{Account: acc})
+
+	return send, expect
 }
 
 func setupConnWithUserPass(t tLogger, c net.Conn, username, password string) (sendFun, expectFun) {
@@ -266,7 +316,7 @@ func setupConnWithUserPass(t tLogger, c net.Conn, username, password string) (se
 	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"protocol\":1,\"user\":%q,\"pass\":%q}\r\n",
 		false, false, false, username, password)
 	sendProto(t, c, cs)
-	return sendCommand(t, c), expectCommand(t, c)
+	return sendCommand(t, c), expectLefMostCommand(t, c)
 }
 
 type sendFun func(string)
@@ -286,6 +336,14 @@ func expectCommand(t tLogger, c net.Conn) expectFun {
 	}
 }
 
+// Closure version for easier reading
+func expectLefMostCommand(t tLogger, c net.Conn) expectFun {
+	var buf []byte
+	return func(re *regexp.Regexp) []byte {
+		return expectLeftMostResult(t, c, re, &buf)
+	}
+}
+
 // Send the protocol command to the server.
 func sendProto(t tLogger, c net.Conn, op string) {
 	n, err := c.Write([]byte(op))
@@ -298,24 +356,27 @@ func sendProto(t tLogger, c net.Conn, op string) {
 }
 
 var (
-	infoRe    = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
-	pingRe    = regexp.MustCompile(`^PING\r\n`)
-	pongRe    = regexp.MustCompile(`^PONG\r\n`)
-	hmsgRe    = regexp.MustCompile(`(?:(?:HMSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s+(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
-	msgRe     = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
-	rawMsgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n(.*?)))`)
-	okRe      = regexp.MustCompile(`\A\+OK\r\n`)
-	errRe     = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
-	connectRe = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
-	rsubRe    = regexp.MustCompile(`RS\+\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
-	runsubRe  = regexp.MustCompile(`RS\-\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
-	rmsgRe    = regexp.MustCompile(`(?:(?:RMSG\s+([^\s]+)\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
-	asubRe    = regexp.MustCompile(`A\+\s+([^\r\n]+)\r\n`)
-	aunsubRe  = regexp.MustCompile(`A\-\s+([^\r\n]+)\r\n`)
-	lsubRe    = regexp.MustCompile(`LS\+\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
-	lunsubRe  = regexp.MustCompile(`LS\-\s+([^\s]+)\s*([^\s]+)?\r\n`)
-	lmsgRe    = regexp.MustCompile(`(?:(?:LMSG\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
-	rlsubRe   = regexp.MustCompile(`LS\+\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	anyRe       = regexp.MustCompile(`.*`)
+	infoRe      = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
+	infoStartRe = regexp.MustCompile(`^INFO\s+([^\r\n]+)\r\n`)
+	pingRe      = regexp.MustCompile(`^PING\r\n`)
+	pongRe      = regexp.MustCompile(`^PONG\r\n`)
+	hmsgRe      = regexp.MustCompile(`(?:(?:HMSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s+(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	msgRe       = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	rawMsgRe    = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n(.*?)))`)
+	okRe        = regexp.MustCompile(`\A\+OK\r\n`)
+	errRe       = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
+	connectRe   = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
+	rsubRe      = regexp.MustCompile(`RS\+\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	runsubRe    = regexp.MustCompile(`RS\-\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
+	rmsgRe      = regexp.MustCompile(`(?:(?:RMSG\s+([^\s]+)\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	asubRe      = regexp.MustCompile(`A\+\s+([^\r\n]+)\r\n`)
+	aunsubRe    = regexp.MustCompile(`A\-\s+([^\r\n]+)\r\n`)
+	lsubRe      = regexp.MustCompile(`LS\+\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	lunsubRe    = regexp.MustCompile(`LS\-\s+([^\s]+)\s*([^\s]+)\s*([^\s]+)?\r\n`)
+	lmsgRe      = regexp.MustCompile(`(?:(?:LMSG\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	rlsubRe     = regexp.MustCompile(`LS\+\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	rlunsubRe   = regexp.MustCompile(`LS\-\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
 )
 
 const (
@@ -335,6 +396,40 @@ const (
 	rsubIndex          = 2
 	replyAndQueueIndex = 3
 )
+
+// Test result from server against regexp and return left most match
+func expectLeftMostResult(t tLogger, c net.Conn, re *regexp.Regexp, buf *[]byte) []byte {
+	recv := func() []byte {
+		expBuf := make([]byte, 32768)
+		// Wait for commands to be processed and results queued for read
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := c.Read(expBuf)
+		c.SetReadDeadline(time.Time{})
+
+		if n <= 0 && err != nil {
+			stackFatalf(t, "Error reading from conn: %v\n", err)
+		}
+		return expBuf[:n]
+	}
+	if len(*buf) == 0 {
+		*buf = recv()
+	}
+	emptyCnt := 0
+	for {
+		result := re.Find(*buf)
+		if result == nil {
+			emptyCnt++
+			if emptyCnt > 5 {
+				stackFatalf(t, "Reading empty data too often\n")
+			}
+			*buf = append(*buf, recv()...)
+		} else {
+			cutIdx := strings.Index(string(*buf), string(result)) + len(result)
+			*buf = (*buf)[cutIdx:]
+			return result
+		}
+	}
+}
 
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
@@ -553,4 +648,13 @@ func nextServerOpts(opts *server.Options) *server.Options {
 	nopts.Cluster.Port++
 	nopts.HTTPPort++
 	return nopts
+}
+
+func createTempFile(t testing.TB, prefix string) *os.File {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return file
 }

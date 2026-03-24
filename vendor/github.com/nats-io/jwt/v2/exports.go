@@ -16,6 +16,7 @@
 package jwt
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -41,28 +42,64 @@ const (
 // Results is the subject where the latency metrics are published.
 // A metric will be defined by the nats-server's ServiceLatency. Time durations
 // are in nanoseconds.
-// see https://github.com/nats-io/nats-server/blob/master/server/accounts.go#L524
+// see https://github.com/nats-io/nats-server/blob/main/server/accounts.go#L524
 // e.g.
-// {
-//  "app": "dlc22",
-//  "start": "2019-09-16T21:46:23.636869585-07:00",
-//  "svc": 219732,
-//  "nats": {
-//    "req": 320415,
-//    "resp": 228268,
-//    "sys": 0
-//  },
-//  "total": 768415
-// }
 //
+//	{
+//	 "app": "dlc22",
+//	 "start": "2019-09-16T21:46:23.636869585-07:00",
+//	 "svc": 219732,
+//	 "nats": {
+//	   "req": 320415,
+//	   "resp": 228268,
+//	   "sys": 0
+//	 },
+//	 "total": 768415
+//	}
 type ServiceLatency struct {
-	Sampling int     `json:"sampling,omitempty"`
-	Results  Subject `json:"results"`
+	Sampling SamplingRate `json:"sampling"`
+	Results  Subject      `json:"results"`
+}
+
+type SamplingRate int
+
+const Headers = SamplingRate(0)
+
+// MarshalJSON marshals the field as "headers" or percentages
+func (r *SamplingRate) MarshalJSON() ([]byte, error) {
+	sr := *r
+	if sr == 0 {
+		return []byte(`"headers"`), nil
+	}
+	if sr >= 1 && sr <= 100 {
+		return []byte(fmt.Sprintf("%d", sr)), nil
+	}
+	return nil, fmt.Errorf("unknown sampling rate")
+}
+
+// UnmarshalJSON unmashals numbers as percentages or "headers"
+func (t *SamplingRate) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 {
+		return fmt.Errorf("empty sampling rate")
+	}
+	if strings.ToLower(string(b)) == `"headers"` {
+		*t = Headers
+		return nil
+	}
+	var j int
+	err := json.Unmarshal(b, &j)
+	if err != nil {
+		return err
+	}
+	*t = SamplingRate(j)
+	return nil
 }
 
 func (sl *ServiceLatency) Validate(vr *ValidationResults) {
-	if sl.Sampling < 1 || sl.Sampling > 100 {
-		vr.AddError("sampling percentage needs to be between 1-100")
+	if sl.Sampling != 0 {
+		if sl.Sampling < 1 || sl.Sampling > 100 {
+			vr.AddError("sampling percentage needs to be between 1-100")
+		}
 	}
 	sl.Results.Validate(vr)
 	if sl.Results.HasWildCards() {
@@ -81,6 +118,9 @@ type Export struct {
 	ResponseThreshold    time.Duration   `json:"response_threshold,omitempty"`
 	Latency              *ServiceLatency `json:"service_latency,omitempty"`
 	AccountTokenPosition uint            `json:"account_token_position,omitempty"`
+	Advertise            bool            `json:"advertise,omitempty"`
+	AllowTrace           bool            `json:"allow_trace,omitempty"`
+	Info
 }
 
 // IsService returns true if an export is for a service
@@ -121,8 +161,13 @@ func (e *Export) Validate(vr *ValidationResults) {
 	if e.IsService() && !e.IsSingleResponse() && !e.IsChunkedResponse() && !e.IsStreamResponse() {
 		vr.AddError("invalid response type for service: %q", e.ResponseType)
 	}
-	if e.IsStream() && e.ResponseType != "" {
-		vr.AddError("invalid response type for stream: %q", e.ResponseType)
+	if e.IsStream() {
+		if e.ResponseType != "" {
+			vr.AddError("invalid response type for stream: %q", e.ResponseType)
+		}
+		if e.AllowTrace {
+			vr.AddError("AllowTrace only valid for service export")
+		}
 	}
 	if e.Latency != nil {
 		if !e.IsService() {
@@ -153,6 +198,7 @@ func (e *Export) Validate(vr *ValidationResults) {
 			}
 		}
 	}
+	e.Info.Validate(vr)
 }
 
 // Revoke enters a revocation by publickey using time.Now().
@@ -227,7 +273,7 @@ func isContainedIn(kind ExportType, subjects []Subject, vr *ValidationResults) {
 }
 
 // Validate calls validate on all of the exports
-func (e *Exports) Validate(vr *ValidationResults) error {
+func (e *Exports) Validate(vr *ValidationResults) {
 	var serviceSubjects []Subject
 	var streamSubjects []Subject
 
@@ -246,8 +292,6 @@ func (e *Exports) Validate(vr *ValidationResults) error {
 
 	isContainedIn(Service, serviceSubjects, vr)
 	isContainedIn(Stream, streamSubjects, vr)
-
-	return nil
 }
 
 // HasExportContainingSubject checks if the export list has an export with the provided subject

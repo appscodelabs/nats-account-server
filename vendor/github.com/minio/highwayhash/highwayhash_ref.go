@@ -2,9 +2,8 @@
 // Use of this source code is governed by a license that can be
 // found in the LICENSE file.
 
-// +build !amd64
-// +build !arm64
-// +build !ppc64le
+//go:build noasm || (!amd64 && !arm64 && !ppc64le)
+// +build noasm !amd64,!arm64,!ppc64le
 
 package highwayhash
 
@@ -12,6 +11,8 @@ var (
 	useSSE4 = false
 	useAVX2 = false
 	useNEON = false
+	useSVE  = false
+	useSVE2 = false
 	useVMX  = false
 )
 

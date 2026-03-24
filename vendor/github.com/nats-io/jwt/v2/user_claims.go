@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 The NATS Authors
+ * Copyright 2018-2024 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -17,23 +17,32 @@ package jwt
 
 import (
 	"errors"
+	"reflect"
 
 	"github.com/nats-io/nkeys"
 )
 
 const (
-	ConnectionTypeStandard  = "STANDARD"
-	ConnectionTypeWebsocket = "WEBSOCKET"
-	ConnectionTypeLeafnode  = "LEAFNODE"
-	ConnectionTypeMqtt      = "MQTT"
+	ConnectionTypeStandard   = "STANDARD"
+	ConnectionTypeWebsocket  = "WEBSOCKET"
+	ConnectionTypeLeafnode   = "LEAFNODE"
+	ConnectionTypeLeafnodeWS = "LEAFNODE_WS"
+	ConnectionTypeMqtt       = "MQTT"
+	ConnectionTypeMqttWS     = "MQTT_WS"
+	ConnectionTypeInProcess  = "IN_PROCESS"
 )
 
-// User defines the user specific data in a user JWT
-type User struct {
+type UserPermissionLimits struct {
 	Permissions
 	Limits
 	BearerToken            bool       `json:"bearer_token,omitempty"`
+	ProxyRequired          bool       `json:"proxy_required,omitempty"`
 	AllowedConnectionTypes StringList `json:"allowed_connection_types,omitempty"`
+}
+
+// User defines the user specific data in a user JWT
+type User struct {
+	UserPermissionLimits
 	// IssuerAccount stores the public key for the account the issuer represents.
 	// When set, the claim was issued by a signing key.
 	IssuerAccount string `json:"issuer_account,omitempty"`
@@ -67,13 +76,32 @@ func NewUserClaims(subject string) *UserClaims {
 	return c
 }
 
+func (u *UserClaims) SetScoped(t bool) {
+	if t {
+		u.UserPermissionLimits = UserPermissionLimits{}
+	} else {
+		u.Limits = Limits{
+			UserLimits{CIDRList{}, nil, ""},
+			NatsLimits{NoLimit, NoLimit, NoLimit},
+		}
+	}
+}
+
+func (u *UserClaims) HasEmptyPermissions() bool {
+	return reflect.DeepEqual(u.UserPermissionLimits, UserPermissionLimits{})
+}
+
 // Encode tries to turn the user claims into a JWT string
 func (u *UserClaims) Encode(pair nkeys.KeyPair) (string, error) {
+	return u.EncodeWithSigner(pair, nil)
+}
+
+func (u *UserClaims) EncodeWithSigner(pair nkeys.KeyPair, fn SignFn) (string, error) {
 	if !nkeys.IsValidPublicUserKey(u.Subject) {
 		return "", errors.New("expected subject to be user public key")
 	}
 	u.Type = UserClaim
-	return u.ClaimsData.encode(pair, u)
+	return u.ClaimsData.encode(pair, u, fn)
 }
 
 // DecodeUserClaims tries to parse a user claims from a JWT string
@@ -128,4 +156,8 @@ func (u *UserClaims) updateVersion() {
 // IsBearerToken returns true if nonce-signing requirements should be skipped
 func (u *UserClaims) IsBearerToken() bool {
 	return u.BearerToken
+}
+
+func (u *UserClaims) GetTags() TagList {
+	return u.User.Tags
 }

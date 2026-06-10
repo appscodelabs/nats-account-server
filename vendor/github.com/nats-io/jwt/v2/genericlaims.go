@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The NATS Authors
+ * Copyright 2018-2024 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -59,7 +59,10 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 		return nil, err
 	}
 
-	var gc GenericClaims
+	gc := struct {
+		GenericClaims
+		GenericFields
+	}{}
 	if err := json.Unmarshal(data, &gc); err != nil {
 		return nil, err
 	}
@@ -74,12 +77,22 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 		if !gc.verify(chunks[1], sig) {
 			return nil, errors.New("claim failed V1 signature verification")
 		}
+		if tp := gc.GenericFields.Type; tp != "" {
+			// the conversion needs to be from a string because
+			// on custom types the type is not going to be one of
+			// the constants
+			gc.GenericClaims.Data["type"] = string(tp)
+		}
+		if tp := gc.GenericFields.Tags; len(tp) != 0 {
+			gc.GenericClaims.Data["tags"] = tp
+		}
+
 	} else {
 		if !gc.verify(token[:len(chunks[0])+len(chunks[1])+1], sig) {
 			return nil, errors.New("claim failed V2 signature verification")
 		}
 	}
-	return &gc, nil
+	return &gc.GenericClaims, nil
 }
 
 // Claims returns the standard part of the generic claim
@@ -94,7 +107,11 @@ func (gc *GenericClaims) Payload() interface{} {
 
 // Encode takes a generic claims and creates a JWT string
 func (gc *GenericClaims) Encode(pair nkeys.KeyPair) (string, error) {
-	return gc.ClaimsData.encode(pair, gc)
+	return gc.ClaimsData.encode(pair, gc, nil)
+}
+
+func (gc *GenericClaims) EncodeWithSigner(pair nkeys.KeyPair, fn SignFn) (string, error) {
+	return gc.ClaimsData.encode(pair, gc, fn)
 }
 
 // Validate checks the generic part of the claims data
@@ -122,11 +139,18 @@ func (gc *GenericClaims) ClaimType() ClaimType {
 			}
 		}
 	}
-	ct, ctok := v.(string)
-	if ctok {
+
+	switch ct := v.(type) {
+	case string:
+		if IsGenericClaimType(ct) {
+			return GenericClaim
+		}
 		return ClaimType(ct)
+	case ClaimType:
+		return ct
+	default:
+		return ""
 	}
-	return ""
 }
 
 func (gc *GenericClaims) updateVersion() {

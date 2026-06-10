@@ -1,39 +1,38 @@
 # NATS - Go Client
 A [Go](http://golang.org) client for the [NATS messaging system](https://nats.io).
 
-[![License Apache 2](https://img.shields.io/badge/License-Apache2-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgo-nats.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2Fnats-io%2Fgo-nats?ref=badge_shield)
-[![Go Report Card](https://goreportcard.com/badge/github.com/nats-io/nats.go)](https://goreportcard.com/report/github.com/nats-io/nats.go) [![Build Status](https://travis-ci.org/nats-io/nats.go.svg?branch=master)](http://travis-ci.org/nats-io/nats.go) [![GoDoc](https://img.shields.io/badge/GoDoc-reference-007d9c)](https://pkg.go.dev/github.com/nats-io/nats.go)
- [![Coverage Status](https://coveralls.io/repos/nats-io/nats.go/badge.svg?branch=master)](https://coveralls.io/r/nats-io/nats.go?branch=master)
+[![License Apache 2][License-Image]][License-Url] [![Go Report Card][ReportCard-Image]][ReportCard-Url] [![Build Status][Build-Status-Image]][Build-Status-Url] [![GoDoc][GoDoc-Image]][GoDoc-Url] [![Coverage Status][Coverage-image]][Coverage-Url]
+
+[License-Url]: https://www.apache.org/licenses/LICENSE-2.0
+[License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
+[ReportCard-Url]: https://goreportcard.com/report/github.com/nats-io/nats.go
+[ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats.go
+[Build-Status-Url]: https://github.com/nats-io/nats.go/actions
+[Build-Status-Image]: https://github.com/nats-io/nats.go/actions/workflows/ci.yaml/badge.svg?branch=main
+[GoDoc-Url]: https://pkg.go.dev/github.com/nats-io/nats.go
+[GoDoc-Image]: https://img.shields.io/badge/GoDoc-reference-007d9c
+[Coverage-Url]: https://coveralls.io/r/nats-io/nats.go?branch=main
+[Coverage-image]: https://coveralls.io/repos/github/nats-io/nats.go/badge.svg?branch=main
+
+**Check out [NATS by example](https://natsbyexample.com) - An evolving collection of runnable, cross-client reference examples for NATS.**
 
 ## Installation
 
 ```bash
-# Go client
-go get github.com/nats-io/nats.go/
+# To get the latest released Go client:
+go get github.com/nats-io/nats.go@latest
 
-# Server
-go get github.com/nats-io/nats-server
-```
+# To get a specific version:
+go get github.com/nats-io/nats.go@v1.49.0
 
-When using or transitioning to Go modules support:
-
-```bash
-# Go client latest or explicit version
-go get github.com/nats-io/nats.go/@latest
-go get github.com/nats-io/nats.go/@v1.10.0
-
-# For latest NATS Server, add /v2 at the end
-go get github.com/nats-io/nats-server/v2
-
-# NATS Server v1 is installed otherwise
-# go get github.com/nats-io/nats-server
+# Note that the latest major version for NATS Server is v2:
+go get github.com/nats-io/nats-server/v2@latest
 ```
 
 ## Basic Usage
 
 ```go
-import nats "github.com/nats-io/nats.go"
+import "github.com/nats-io/nats.go"
 
 // Connect to a server
 nc, _ := nats.Connect(nats.DefaultURL)
@@ -82,59 +81,49 @@ nc.Drain()
 nc.Close()
 ```
 
-## Encoded Connections
+## JetStream
+[![JetStream API Reference](https://pkg.go.dev/badge/github.com/nats-io/nats.go/jetstream.svg)](https://pkg.go.dev/github.com/nats-io/nats.go/jetstream)
+
+JetStream is the built-in NATS persistence system. `nats.go` provides a built-in
+API enabling both managing JetStream assets as well as publishing/consuming
+persistent messages.
+
+
+### Basic usage
 
 ```go
-
+// connect to nats server
 nc, _ := nats.Connect(nats.DefaultURL)
-c, _ := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-defer c.Close()
 
-// Simple Publisher
-c.Publish("foo", "Hello World")
+// create jetstream context from nats connection
+js, _ := jetstream.New(nc)
 
-// Simple Async Subscriber
-c.Subscribe("foo", func(s string) {
-    fmt.Printf("Received a message: %s\n", s)
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+// get existing stream handle
+stream, _ := js.Stream(ctx, "foo")
+
+// retrieve consumer handle from a stream
+cons, _ := stream.Consumer(ctx, "cons")
+
+// consume messages from the consumer in callback
+cc, _ := cons.Consume(func(msg jetstream.Msg) {
+    fmt.Println("Received jetstream message: ", string(msg.Data()))
+    msg.Ack()
 })
-
-// EncodedConn can Publish any raw Go type using the registered Encoder
-type person struct {
-     Name     string
-     Address  string
-     Age      int
-}
-
-// Go type Subscriber
-c.Subscribe("hello", func(p *person) {
-    fmt.Printf("Received a person: %+v\n", p)
-})
-
-me := &person{Name: "derek", Age: 22, Address: "140 New Montgomery Street, San Francisco, CA"}
-
-// Go type Publisher
-c.Publish("hello", me)
-
-// Unsubscribe
-sub, err := c.Subscribe("foo", nil)
-// ...
-sub.Unsubscribe()
-
-// Requests
-var response string
-err = c.Request("help", "help me", &response, 10*time.Millisecond)
-if err != nil {
-    fmt.Printf("Request failed: %v\n", err)
-}
-
-// Replying
-c.Subscribe("help", func(subj, reply string, msg string) {
-    c.Publish(reply, "I can help!")
-})
-
-// Close connection
-c.Close();
+defer cc.Stop()
 ```
+
+To find more information on `nats.go` JetStream API, visit
+[`jetstream/README.md`](jetstream/README.md)
+
+> The current JetStream API replaces the [legacy JetStream API](legacy_jetstream.md)
+
+## Service API
+
+The service API (`micro`) allows you to [easily build NATS services](micro/README.md) The
+services API is currently in beta release.
 
 ## New Authentication (Nkeys and User Credentials)
 This requires server with version >= 2.0.0
@@ -145,7 +134,7 @@ The simplest form is to use the helper method UserCredentials(credsFilepath).
 nc, err := nats.Connect(url, nats.UserCredentials("user.creds"))
 ```
 
-The helper methods creates two callback handlers to present the user JWT and sign the nonce challenge from the server.
+The helper method creates two callback handlers to present the user JWT and sign the nonce challenge from the server.
 The core client library never has direct access to your private key and simply performs the callback for signing the server challenge.
 The helper will load and wipe and erase memory it uses for each connect or reconnect.
 
@@ -188,7 +177,7 @@ nc, err := nats.Connect("tls://nats.demo.io:4443")
 // We provide a helper method to make this case easier.
 nc, err = nats.Connect("tls://localhost:4443", nats.RootCAs("./configs/certs/ca.pem"))
 
-// If the server requires client certificate, there is an helper function for that too:
+// If the server requires client certificate, there is a helper function for that too:
 cert := nats.ClientCert("./configs/certs/client-cert.pem", "./configs/certs/client-key.pem")
 nc, err = nats.Connect("tls://localhost:4443", cert)
 
@@ -215,51 +204,23 @@ if err != nil {
 
 ```
 
-## Using Go Channels (netchan)
-
-```go
-nc, _ := nats.Connect(nats.DefaultURL)
-ec, _ := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-defer ec.Close()
-
-type person struct {
-     Name     string
-     Address  string
-     Age      int
-}
-
-recvCh := make(chan *person)
-ec.BindRecvChan("hello", recvCh)
-
-sendCh := make(chan *person)
-ec.BindSendChan("hello", sendCh)
-
-me := &person{Name: "derek", Age: 22, Address: "140 New Montgomery Street"}
-
-// Send via Go channels
-sendCh <- me
-
-// Receive via Go channels
-who := <- recvCh
-```
-
 ## Wildcard Subscriptions
 
 ```go
 
 // "*" matches any token, at any level of the subject.
 nc.Subscribe("foo.*.baz", func(m *Msg) {
-    fmt.Printf("Msg received on [%s] : %s\n", m.Subject, string(m.Data));
+    fmt.Printf("Msg received on [%s] : %s\n", m.Subject, string(m.Data))
 })
 
 nc.Subscribe("foo.bar.*", func(m *Msg) {
-    fmt.Printf("Msg received on [%s] : %s\n", m.Subject, string(m.Data));
+    fmt.Printf("Msg received on [%s] : %s\n", m.Subject, string(m.Data))
 })
 
 // ">" matches any length of the tail of a subject, and can only be the last token
 // E.g. 'foo.>' will match 'foo.bar', 'foo.bar.baz', 'foo.foo.bar.bax.22'
 nc.Subscribe("foo.>", func(m *Msg) {
-    fmt.Printf("Msg received on [%s] : %s\n", m.Subject, string(m.Data));
+    fmt.Printf("Msg received on [%s] : %s\n", m.Subject, string(m.Data))
 })
 
 // Matches all of the above
@@ -276,9 +237,8 @@ nc.Publish("foo.bar.baz", []byte("Hello World"))
 // Normal subscribers will continue to work as expected.
 
 nc.QueueSubscribe("foo", "job_workers", func(_ *Msg) {
-  received += 1;
+  received += 1
 })
-
 ```
 
 ## Advanced Usage
@@ -307,9 +267,9 @@ fmt.Println("All clear!")
 // FlushTimeout specifies a timeout value as well.
 err := nc.FlushTimeout(1*time.Second)
 if err != nil {
-    fmt.Println("All clear!")
-} else {
     fmt.Println("Flushed timed out!")
+} else {
+    fmt.Println("All clear!")
 }
 
 // Auto-unsubscribe after MAX_WANTED messages received
@@ -325,7 +285,7 @@ nc1.Subscribe("foo", func(m *Msg) {
     fmt.Printf("Received a message: %s\n", string(m.Data))
 })
 
-nc2.Publish("foo", []byte("Hello World!"));
+nc2.Publish("foo", []byte("Hello World!"))
 
 ```
 
@@ -379,7 +339,7 @@ nc, err = nats.Connect("nats://localhost:4222", nats.UserInfo("foo", "bar"))
 // For token based authentication:
 nc, err = nats.Connect("nats://localhost:4222", nats.Token("S3cretT0ken"))
 
-// You can even pass the two at the same time in case one of the server
+// You can even pass the two at the same time in case one of the servers
 // in the mesh requires token instead of user name and password.
 nc, err = nats.Connect("nats://localhost:4222",
     nats.UserInfo("foo", "bar"),
@@ -410,18 +370,20 @@ msg, err := nc.RequestWithContext(ctx, "foo", []byte("bar"))
 sub, err := nc.SubscribeSync("foo")
 msg, err := sub.NextMsgWithContext(ctx)
 
-// Encoded Request with context
-c, err := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-type request struct {
-	Message string `json:"message"`
-}
-type response struct {
-	Code int `json:"code"`
-}
-req := &request{Message: "Hello"}
-resp := &response{}
-err := c.RequestWithContext(ctx, "foo", req, resp)
 ```
+
+## Backward compatibility
+
+In the development of nats.go, we are committed to maintaining backward compatibility and ensuring a stable and reliable  experience for all users. In general, we follow the standard go compatibility guidelines.
+However, it's important to clarify our stance on certain types of changes:
+
+- **Expanding structures:**
+Adding new fields to structs is not considered a breaking change.
+
+- **Adding methods to exported interfaces:**
+Extending public interfaces with new methods is also not viewed as a breaking change within the context of this project. It is important to note that no unexported methods will be added to interfaces allowing users to implement them.
+
+Additionally, this library always supports at least 2 latest minor Go versions. For example, if the latest Go version is 1.22, the library will support Go 1.21 and 1.22.
 
 ## License
 

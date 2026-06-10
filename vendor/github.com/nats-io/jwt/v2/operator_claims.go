@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The NATS Authors
+ * Copyright 2018-2024 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -43,6 +43,8 @@ type Operator struct {
 	SystemAccount string `json:"system_account,omitempty"`
 	// Min Server version
 	AssertServerVersion string `json:"assert_server_version,omitempty"`
+	// Signing of subordinate objects will require signing keys
+	StrictSigningKeyUsage bool `json:"strict_signing_key_usage,omitempty"`
 	GenericFields
 }
 
@@ -69,12 +71,12 @@ func ParseServerVersion(version string) (int, int, int, error) {
 // Validate checks the validity of the operators contents
 func (o *Operator) Validate(vr *ValidationResults) {
 	if err := o.validateAccountServerURL(); err != nil {
-		vr.AddError(err.Error())
+		vr.AddError("%s", err.Error())
 	}
 
 	for _, v := range o.validateOperatorServiceURLs() {
 		if v != nil {
-			vr.AddError(v.Error())
+			vr.AddError("%s", v.Error())
 		}
 	}
 
@@ -134,8 +136,12 @@ func ValidateOperatorServiceURL(v string) error {
 		return nil
 	case "tls":
 		return nil
+	case "ws":
+		return nil
+	case "wss":
+		return nil
 	default:
-		return fmt.Errorf("operator service url %q - protocol not supported (only 'nats' or 'tls' only)", v)
+		return fmt.Errorf("operator service url %q - protocol not supported (only 'nats', 'tls', 'ws', 'wss' only)", v)
 	}
 }
 
@@ -164,6 +170,7 @@ func NewOperatorClaims(subject string) *OperatorClaims {
 	}
 	c := &OperatorClaims{}
 	c.Subject = subject
+	c.Issuer = subject
 	return c
 }
 
@@ -174,13 +181,20 @@ func (oc *OperatorClaims) DidSign(op Claims) bool {
 	}
 	issuer := op.Claims().Issuer
 	if issuer == oc.Subject {
-		return true
+		if !oc.StrictSigningKeyUsage {
+			return true
+		}
+		return op.Claims().Subject == oc.Subject
 	}
 	return oc.SigningKeys.Contains(issuer)
 }
 
 // Encode the claims into a JWT string
 func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
+	return oc.EncodeWithSigner(pair, nil)
+}
+
+func (oc *OperatorClaims) EncodeWithSigner(pair nkeys.KeyPair, fn SignFn) (string, error) {
 	if !nkeys.IsValidPublicOperatorKey(oc.Subject) {
 		return "", errors.New("expected subject to be an operator public key")
 	}
@@ -189,7 +203,7 @@ func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", err
 	}
 	oc.Type = OperatorClaim
-	return oc.ClaimsData.encode(pair, oc)
+	return oc.ClaimsData.encode(pair, oc, fn)
 }
 
 func (oc *OperatorClaims) ClaimType() ClaimType {
@@ -236,4 +250,8 @@ func (oc *OperatorClaims) Claims() *ClaimsData {
 
 func (oc *OperatorClaims) updateVersion() {
 	oc.GenericFields.Version = libVersion
+}
+
+func (oc *OperatorClaims) GetTags() TagList {
+	return oc.Operator.Tags
 }

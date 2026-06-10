@@ -42,13 +42,18 @@ So for moderately sized messages it tops out at about 15 GB/sec. Also for small 
 
 ### ARM Performance
 
-On an 8 core 1.2 GHz ARM Cortex-A53 (running Debian 8.0 Jessie with Go 1.7.4) the following results were obtained:
+Below are the single core results on an EC2 c7g.4xlarge (Graviton3) instance for 256 bit outputs:
 
-Platform/CPU      | Write 64         | Write 1024        | Write 8192
------------------ | ---------------- | ----------------- | -----------------
-ARM64 NEON        | 384 MB/s         | 955 MB/s          | 1053 MB/s
-
-*Note: For now just the (main) update loop is implemented in assembly, so for small messages there is still considerable overhead due to initialization and finalization.*
+```
+BenchmarkSum256_16                143.66 MB/s
+BenchmarkSum256_64                628.75 MB/s
+BenchmarkSum256_1K               3621.71 MB/s
+BenchmarkSum256_8K               5039.64 MB/s
+BenchmarkSum256_1M               5279.79 MB/s
+BenchmarkSum256_5M               5474.60 MB/s
+BenchmarkSum256_10M              5621.73 MB/s
+BenchmarkSum256_25M              5250.47 MB/s
+```
 
 ### ppc64le Performance
 
@@ -87,7 +92,7 @@ More information can be found in [HashCompare](https://github.com/fwessels/HashC
 
 ### Requirements
 
-All Go versions >= 1.7 are supported. Notice that the amd64 AVX2 implementation is only available with Go 1.8 and newer.
+All Go versions >= 1.11 are supported (needed for required assembly support for the different platforms).
 
 ### Contributing
 
